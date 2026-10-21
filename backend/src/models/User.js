@@ -8,7 +8,7 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true,
     trim: true,
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+    match: [/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, 'Please enter a valid email address']
   },
   password: {
     type: String,
@@ -134,19 +134,23 @@ userSchema.statics.findBySkill = function(skill, type = 'offered') {
 };
 
 // Static method to find users for skill matching
-userSchema.statics.findSkillMatches = function(userId) {
-  return this.findById(userId).then(user => {
-    if (!user) return [];
-    
-    return this.find({
-      _id: { $ne: userId },
-      isPublic: true,
-      isBanned: false,
-      $or: [
-        { skillsOffered: { $in: user.skillsWanted } },
-        { skillsWanted: { $in: user.skillsOffered } }
-      ]
-    });
+userSchema.statics.findSkillMatches = async function(userId) {
+  const user = await this.findById(userId);
+  if (!user || (!user.skillsWanted?.length && !user.skillsOffered?.length)) return [];
+  
+  const conditions = [];
+  if (user.skillsWanted?.length) {
+    conditions.push({ skillsOffered: { $in: user.skillsWanted } });
+  }
+  if (user.skillsOffered?.length) {
+    conditions.push({ skillsWanted: { $in: user.skillsOffered } });
+  }
+
+  return this.find({
+    _id: { $ne: userId },
+    isPublic: true,
+    isBanned: false,
+    $or: conditions
   });
 };
 

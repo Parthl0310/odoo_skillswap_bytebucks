@@ -14,7 +14,7 @@ router.get('/', optionalAuth, [
   query('availability').optional().isIn(['weekdays', 'weekends', 'evenings', 'flexible']).withMessage('Invalid availability option'),
   query('location').optional().trim().isLength({ min: 1 }).withMessage('Location must not be empty'),
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
+  query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('Limit must be between 1 and 200')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -57,7 +57,7 @@ router.get('/', optionalAuth, [
 
     // Execute query
     const users = await User.find(query)
-      .select('name email location photo skillsOffered skillsWanted availability rating reviewCount joinedAt')
+      .select('name email location photo skillsOffered skillsWanted availability rating reviewCount joinedAt isPublic isAdmin isBanned')
       .sort({ rating: -1, reviewCount: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -146,7 +146,7 @@ router.get('/:id', optionalAuth, [
 router.get('/:id/skill-matches', [
   param('id').isMongoId().withMessage('Invalid user ID'),
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
+  query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('Limit must be between 1 and 200')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -169,23 +169,31 @@ router.get('/:id/skill-matches', [
       });
     }
 
+    const hasWanted = user.skillsWanted && user.skillsWanted.length > 0;
+    const hasOffered = user.skillsOffered && user.skillsOffered.length > 0;
+    
+    let matchQuery = {
+      _id: { $ne: req.params.id },
+      isPublic: true,
+      isBanned: false
+    };
+
+    if (hasWanted || hasOffered) {
+      const orConditions = [];
+      if (hasWanted) orConditions.push({ skillsOffered: { $in: user.skillsWanted } });
+      if (hasOffered) orConditions.push({ skillsWanted: { $in: user.skillsOffered } });
+      matchQuery.$or = orConditions;
+    }
+
     // Find skill matches
-    const matches = await User.findSkillMatches(req.params.id)
+    const matches = await User.find(matchQuery)
       .select('name email location photo skillsOffered skillsWanted availability rating reviewCount joinedAt')
       .sort({ rating: -1, reviewCount: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     // Get total count
-    const total = await User.countDocuments({
-      _id: { $ne: req.params.id },
-      isPublic: true,
-      isBanned: false,
-      $or: [
-        { skillsOffered: { $in: user.skillsWanted } },
-        { skillsWanted: { $in: user.skillsOffered } }
-      ]
-    });
+    const total = await User.countDocuments(matchQuery);
 
     // Calculate pagination info
     const totalPages = Math.ceil(total / limit);

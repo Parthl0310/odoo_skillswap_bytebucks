@@ -19,6 +19,8 @@ export interface SwapRequest {
   id: string;
   fromUserId: string;
   toUserId: string;
+  rawFromUser?: any;
+  rawToUser?: any;
   skillOffered: string;
   skillWanted: string;
   message: string;
@@ -62,4 +64,19 @@ export interface AdminMessage {
   type: 'info' | 'warning' | 'announcement';
   createdAt: Date;
   isActive: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  swapId: string;
+  senderId: string;
+  receiverId: string;
+  sender?: {
+    id: string;
+    name: string;
+    photo?: string;
+  };
+  text: string;
+  read: boolean;
+  createdAt: string | Date;
 }

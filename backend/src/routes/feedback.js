@@ -85,7 +85,7 @@ router.post('/:swapId', protect, [
     await swapRequest.populate('fromUserId', 'name email photo');
     await swapRequest.populate('toUserId', 'name email photo');
 
-    res.json({
+    res.status(201).json({
       success: true,
       message: 'Feedback added successfully',
       data: { swapRequest }

@@ -12,7 +12,7 @@ class RealtimeService {
       return;
     }
 
-    const serverUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const serverUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/api\/?$/, '');
     
     this.socket = io(serverUrl, {
       transports: ['websocket', 'polling'],
@@ -69,29 +69,111 @@ class RealtimeService {
     }
   }
 
+  // Swap Request notifications
   onNewSwapRequest(callback: (data: any) => void) {
     if (!this.socket) return;
-    
-    this.socket.on('new-swap-request', (data) => {
-      console.log('New swap request received:', data);
-      callback(data);
-    });
+    this.socket.on('new-swap-request', callback);
   }
 
   onSwapRequestUpdated(callback: (data: any) => void) {
     if (!this.socket) return;
-    
-    this.socket.on('swap-request-updated', (data) => {
-      console.log('Swap request updated:', data);
-      callback(data);
-    });
+    this.socket.on('swap-request-updated', callback);
+  }
+
+  // Live user profile & skill updates
+  onUserUpdated(callback: (data: any) => void) {
+    if (!this.socket) return;
+    this.socket.on('user-updated', callback);
+  }
+
+  // Chat Room Management
+  joinChat(swapId: string, userId: string) {
+    if (this.socket?.connected) {
+      this.socket.emit('join-chat', { swapId, userId });
+    }
+  }
+
+  leaveChat(swapId: string, userId?: string) {
+    if (this.socket?.connected) {
+      this.socket.emit('leave-chat', { swapId, userId });
+    }
+  }
+
+  // Listen to chat presence events (who is currently inside the chat modal)
+  onChatPresence(callback: (data: { swapId: string; onlineUsers: string[] }) => void) {
+    if (!this.socket) return;
+    this.socket.on('chat-presence', callback);
+  }
+
+  // Send real-time chat message via WebSocket
+  sendChatMessage(
+    swapId: string,
+    senderId: string,
+    receiverId: string,
+    text: string,
+    callback?: (response: any) => void
+  ) {
+    if (this.socket?.connected) {
+      this.socket.emit('send-message', { swapId, senderId, receiverId, text }, callback);
+    }
+  }
+
+  // Send typing indicator
+  sendTyping(swapId: string, userId: string, isTyping: boolean, userName?: string) {
+    if (this.socket?.connected) {
+      this.socket.emit('typing', { swapId, userId, isTyping, userName });
+    }
+  }
+
+  // Mark messages as read in real-time
+  markRead(swapId: string, userId: string) {
+    if (this.socket?.connected) {
+      this.socket.emit('mark-read', { swapId, userId });
+    }
+  }
+
+  // Listen to incoming chat message
+  onReceiveMessage(callback: (data: { message: any }) => void) {
+    if (!this.socket) return;
+    this.socket.on('receive-message', callback);
+  }
+
+  // Listen to typing events
+  onUserTyping(callback: (data: { swapId: string; userId: string; isTyping: boolean; userName?: string }) => void) {
+    if (!this.socket) return;
+    this.socket.on('user-typing', callback);
+  }
+
+  // Listen to unread message notifications
+  onNewMessageNotification(callback: (data: any) => void) {
+    if (!this.socket) return;
+    this.socket.on('new-message-notification', callback);
+  }
+
+  // Listen to messages read event
+  onMessagesRead(callback: (data: { swapId: string }) => void) {
+    if (!this.socket) return;
+    this.socket.on('messages-read', callback);
+  }
+
+  // Unsubscribe from an event
+  off(event: string, callback?: (...args: any[]) => void) {
+    if (!this.socket) return;
+    if (callback) {
+      this.socket.off(event, callback);
+    } else {
+      this.socket.off(event);
+    }
   }
 
   getConnectionStatus(): boolean {
     return this.isConnected;
   }
 
-  // Method to manually emit events (for testing)
+  isSocketConnected(): boolean {
+    return Boolean(this.socket?.connected);
+  }
+
   emit(event: string, data: any) {
     if (this.socket?.connected) {
       this.socket.emit(event, data);
@@ -102,4 +184,4 @@ class RealtimeService {
 // Create a singleton instance
 const realtimeService = new RealtimeService();
 
-export default realtimeService; 
+export default realtimeService;

@@ -27,21 +27,38 @@ class ApiService {
     const url = `${API_BASE_URL}${endpoint}`;
     const token = this.getToken();
 
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+
+    const headers: Record<string, string> = {
+      ...(token && { Authorization: `Bearer ${token}` }),
+      ...(options.headers as Record<string, string>),
+    };
+
+    if (!isFormData && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+
     const config: RequestInit = {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { Authorization: `Bearer ${token}` }),
-        ...options.headers,
-      },
       ...options,
+      headers,
     };
 
     try {
       const response = await fetch(url, config);
-      const data = await response.json();
+      let data: any = {};
+      try {
+        data = await response.json();
+      } catch {
+        // If response is not JSON
+      }
 
       if (!response.ok) {
-        throw new Error(data.message || 'API request failed');
+        const errorMessage = (data.errors && Array.isArray(data.errors) && data.errors.length > 0)
+          ? data.errors.map((e: any) => e.msg || e.message).join(', ')
+          : (data.message || `Request failed with status ${response.status}`);
+        const error: any = new Error(errorMessage);
+        error.status = response.status;
+        throw error;
       }
 
       return data;
@@ -70,10 +87,11 @@ class ApiService {
     return this.request('/auth/me');
   }
 
-  async updateProfile(profileData: any) {
+  async updateProfile(profileData: any): Promise<{ success: boolean; message: string; data: { user: any } }> {
+    const isFormData = typeof FormData !== 'undefined' && profileData instanceof FormData;
     return this.request('/auth/profile', {
       method: 'PUT',
-      body: JSON.stringify(profileData),
+      body: isFormData ? profileData : JSON.stringify(profileData),
     });
   }
 
@@ -338,6 +356,65 @@ class ApiService {
   async deleteAdminMessage(messageId: string) {
     return this.request(`/admin/messages/${messageId}`, {
       method: 'DELETE',
+    });
+  }
+
+  async moderateUserSkills(userId: string, data: { skillsOffered?: string[]; skillsWanted?: string[]; reason?: string }) {
+    return this.request(`/admin/users/${userId}/moderate-skills`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async exportAdminReport() {
+    return this.request('/admin/reports/export');
+  }
+
+  async exportAdminReportCSV(type: 'users' | 'swaps' | 'feedback' = 'users'): Promise<string> {
+    const token = this.token || localStorage.getItem('token');
+    const response = await fetch(`${API_BASE_URL}/admin/reports/export-csv?type=${type}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to export CSV: ${response.statusText}`);
+    }
+    return response.text();
+  }
+
+  // Chat message endpoints
+  async getMessages(swapId: string): Promise<{ success: boolean; data: { messages: any[] } }> {
+    return this.request(`/messages/${swapId}`);
+  }
+
+  async sendChatMessage(swapId: string, text: string) {
+    return this.request(`/messages/${swapId}`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  async markMessagesAsRead(swapId: string) {
+    return this.request(`/messages/${swapId}/read`, {
+      method: 'PUT',
+    });
+  }
+
+  // Notification endpoints
+  async getNotifications(): Promise<{ success: boolean; data: { notifications: any[]; unreadCount: number } }> {
+    return this.request('/notifications');
+  }
+
+  async markNotificationRead(id: string) {
+    return this.request(`/notifications/${id}/read`, {
+      method: 'PUT',
+    });
+  }
+
+  async markAllNotificationsRead() {
+    return this.request('/notifications/read-all', {
+      method: 'PUT',
     });
   }
 }

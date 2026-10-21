@@ -23,8 +23,8 @@ router.post('/register', [
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
   body('location').optional().trim().isLength({ max: 100 }).withMessage('Location cannot exceed 100 characters'),
   body('availability').optional().isIn(['weekdays', 'weekends', 'evenings', 'flexible']).withMessage('Invalid availability option'),
-  body('skillsOffered').optional().isArray().withMessage('Skills offered must be an array'),
-  body('skillsWanted').optional().isArray().withMessage('Skills wanted must be an array'),
+  body('skillsOffered').optional(),
+  body('skillsWanted').optional(),
   body('isPublic').optional().isBoolean().withMessage('isPublic must be a boolean')
 ], async (req, res) => {
   try {
@@ -32,31 +32,47 @@ router.post('/register', [
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Validation error',
+        message: errors.array().map(e => e.msg).join(', '),
         errors: errors.array()
       });
     }
 
     const { name, email, password, location, availability, skillsOffered, skillsWanted, isPublic } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'User already exists with this email'
+        message: 'An account with this email already exists'
       });
+    }
+
+    // Process skills arrays/strings cleanly
+    let skillsOfferedArray = [];
+    if (Array.isArray(skillsOffered)) {
+      skillsOfferedArray = skillsOffered.filter(s => typeof s === 'string' && s.trim());
+    } else if (typeof skillsOffered === 'string' && skillsOffered.trim()) {
+      skillsOfferedArray = skillsOffered.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    let skillsWantedArray = [];
+    if (Array.isArray(skillsWanted)) {
+      skillsWantedArray = skillsWanted.filter(s => typeof s === 'string' && s.trim());
+    } else if (typeof skillsWanted === 'string' && skillsWanted.trim()) {
+      skillsWantedArray = skillsWanted.split(',').map(s => s.trim()).filter(Boolean);
     }
 
     // Create user
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password,
-      location,
+      location: location ? location.trim() : undefined,
       availability: availability || 'flexible',
-      skillsOffered: skillsOffered || [],
-      skillsWanted: skillsWanted || [],
+      skillsOffered: skillsOfferedArray,
+      skillsWanted: skillsWantedArray,
       isPublic: isPublic !== undefined ? isPublic : true
     });
 
@@ -65,7 +81,7 @@ router.post('/register', [
 
     res.status(201).json({
       success: true,
-      message: 'User registered successfully',
+      message: 'Account created successfully',
       data: {
         user: {
           id: user._id,
@@ -87,9 +103,22 @@ router.post('/register', [
     });
   } catch (error) {
     console.error('Register error:', error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(val => val.message).join(', ');
+      return res.status(400).json({
+        success: false,
+        message: messages || 'Validation failed'
+      });
+    }
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'An account with this email already exists'
+      });
+    }
     res.status(500).json({
       success: false,
-      message: 'Server error'
+      message: error.message || 'Server error occurred during registration'
     });
   }
 });
@@ -106,19 +135,20 @@ router.post('/login', [
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Validation error',
+        message: errors.array().map(e => e.msg).join(', '),
         errors: errors.array()
       });
     }
 
     const { email, password } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
 
     // Check if user exists
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: normalizedEmail }).select('+password');
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials'
+        message: 'Invalid email or password'
       });
     }
 
@@ -126,7 +156,7 @@ router.post('/login', [
     if (user.isBanned) {
       return res.status(403).json({
         success: false,
-        message: 'Your account has been banned'
+        message: 'Your account has been suspended or banned'
       });
     }
 
@@ -135,7 +165,7 @@ router.post('/login', [
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials'
+        message: 'Invalid email or password'
       });
     }
 
@@ -171,7 +201,7 @@ router.post('/login', [
     console.error('Login error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error'
+      message: error.message || 'Server error occurred during login'
     });
   }
 });
@@ -215,7 +245,26 @@ router.get('/me', protect, async (req, res) => {
 // @route   PUT /api/auth/profile
 // @desc    Update user profile
 // @access  Private
-router.put('/profile', protect, uploadSingle, [
+router.put('/profile', protect, uploadSingle, (req, res, next) => {
+  if (req.body.skillsOffered && typeof req.body.skillsOffered === 'string') {
+    try {
+      req.body.skillsOffered = JSON.parse(req.body.skillsOffered);
+    } catch {
+      req.body.skillsOffered = [req.body.skillsOffered];
+    }
+  }
+  if (req.body.skillsWanted && typeof req.body.skillsWanted === 'string') {
+    try {
+      req.body.skillsWanted = JSON.parse(req.body.skillsWanted);
+    } catch {
+      req.body.skillsWanted = [req.body.skillsWanted];
+    }
+  }
+  if (req.body.isPublic !== undefined && typeof req.body.isPublic === 'string') {
+    req.body.isPublic = req.body.isPublic === 'true';
+  }
+  next();
+}, [
   body('name').optional().trim().isLength({ min: 2, max: 50 }).withMessage('Name must be between 2 and 50 characters'),
   body('location').optional().trim().isLength({ max: 100 }).withMessage('Location cannot exceed 100 characters'),
   body('availability').optional().isIn(['weekdays', 'weekends', 'evenings', 'flexible']).withMessage('Invalid availability option'),
@@ -247,25 +296,34 @@ router.put('/profile', protect, uploadSingle, [
       { new: true, runValidators: true }
     );
 
+    const updatedUserData = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      location: user.location,
+      photo: user.photo,
+      skillsOffered: user.skillsOffered,
+      skillsWanted: user.skillsWanted,
+      availability: user.availability,
+      isPublic: user.isPublic,
+      isAdmin: user.isAdmin,
+      isBanned: user.isBanned,
+      rating: user.rating,
+      reviewCount: user.reviewCount,
+      joinedAt: user.createdAt
+    };
+
+    // Broadcast live update to all connected users
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('user-updated', { user: updatedUserData });
+    }
+
     res.json({
       success: true,
       message: 'Profile updated successfully',
       data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          location: user.location,
-          photo: user.photo,
-          skillsOffered: user.skillsOffered,
-          skillsWanted: user.skillsWanted,
-          availability: user.availability,
-          isPublic: user.isPublic,
-          isAdmin: user.isAdmin,
-          rating: user.rating,
-          reviewCount: user.reviewCount,
-          joinedAt: user.createdAt
-        }
+        user: updatedUserData
       }
     });
   } catch (error) {

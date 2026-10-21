@@ -619,10 +619,247 @@ router.delete('/messages/:id', [
       message: 'Admin message deleted successfully'
     });
   } catch (error) {
-    console.error('Delete admin message error:', error);
+    console.error('Delete message error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error'
+    });
+  }
+});
+
+// @route   PUT /api/admin/users/:id/moderate-skills
+// @desc    Reject / remove inappropriate or spammy skill descriptions
+// @access  Admin
+router.put('/users/:id/moderate-skills', [
+  param('id').isMongoId().withMessage('Invalid user ID'),
+  body('skillsOffered').optional().isArray().withMessage('skillsOffered must be an array'),
+  body('skillsWanted').optional().isArray().withMessage('skillsWanted must be an array'),
+  body('reason').optional().trim().isLength({ max: 200 }).withMessage('Reason cannot exceed 200 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        errors: errors.array()
+      });
+    }
+
+    const { skillsOffered, skillsWanted, reason } = req.body;
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (skillsOffered !== undefined) {
+      user.skillsOffered = skillsOffered;
+    }
+    if (skillsWanted !== undefined) {
+      user.skillsWanted = skillsWanted;
+    }
+
+    await user.save();
+
+    // Create notification for user
+    await Notification.create({
+      userId: user._id,
+      type: 'admin_message',
+      title: 'Skills Updated by Administrator',
+      message: reason || 'One or more of your listed skills were moderated by an administrator due to platform policies.',
+      relatedId: req.user._id,
+      relatedModel: 'User'
+    });
+
+    res.json({
+      success: true,
+      message: 'User skills updated successfully',
+      data: { user }
+    });
+  } catch (error) {
+    console.error('Moderate skills error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
+
+// @route   GET /api/admin/reports/export
+// @desc    Download reports of user activity, feedback logs, and swap stats
+// @access  Admin
+router.get('/reports/export', async (req, res) => {
+  try {
+    const users = await User.find().select('-password').lean();
+    const swaps = await SwapRequest.find()
+      .populate('fromUserId', 'name email')
+      .populate('toUserId', 'name email')
+      .lean();
+    const swapStats = await SwapRequest.getStats();
+
+    const reportData = {
+      generatedAt: new Date().toISOString(),
+      summary: {
+        totalUsers: users.length,
+        activeUsers: users.filter(u => !u.isBanned).length,
+        bannedUsers: users.filter(u => u.isBanned).length,
+        totalSwaps: swaps.length,
+        completedSwaps: swaps.filter(s => s.status === 'completed').length,
+        pendingSwaps: swaps.filter(s => s.status === 'pending').length,
+        swapStatusBreakdown: swapStats
+      },
+      users: users.map(u => ({
+        id: u._id,
+        name: u.name,
+        email: u.email,
+        location: u.location || '',
+        skillsOffered: u.skillsOffered,
+        skillsWanted: u.skillsWanted,
+        availability: u.availability,
+        isPublic: u.isPublic,
+        isAdmin: u.isAdmin,
+        isBanned: u.isBanned,
+        rating: u.rating,
+        reviewCount: u.reviewCount,
+        joinedAt: u.createdAt
+      })),
+      swaps: swaps.map(s => ({
+        id: s._id,
+        fromUser: s.fromUserId ? s.fromUserId.name : 'Unknown',
+        fromUserEmail: s.fromUserId ? s.fromUserId.email : '',
+        toUser: s.toUserId ? s.toUserId.name : 'Unknown',
+        toUserEmail: s.toUserId ? s.toUserId.email : '',
+        skillOffered: s.skillOffered,
+        skillWanted: s.skillWanted,
+        status: s.status,
+        createdAt: s.createdAt,
+        completedAt: s.completedAt,
+        feedback: s.feedback
+      }))
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=skillswap-report-${new Date().toISOString().split('T')[0]}.json`);
+    res.json(reportData);
+  } catch (error) {
+    console.error('Export report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+});
+
+// Helper for CSV escaping
+const escapeCSV = (val) => {
+  if (val === null || val === undefined) return '""';
+  if (val instanceof Date) return `"${val.toISOString()}"`;
+  let str = Array.isArray(val) ? val.join('; ') : String(val);
+  return `"${str.replace(/"/g, '""')}"`;
+};
+
+// @route   GET /api/admin/reports/export-csv
+// @desc    Download CSV spreadsheet of users, swaps, or feedback logs
+// @access  Admin
+router.get('/reports/export-csv', async (req, res) => {
+  try {
+    const { type = 'users' } = req.query;
+    const dateStr = new Date().toISOString().split('T')[0];
+
+    if (type === 'swaps') {
+      const swaps = await SwapRequest.find()
+        .populate('fromUserId', 'name email')
+        .populate('toUserId', 'name email')
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const headers = ['Swap ID', 'Requester Name', 'Requester Email', 'Recipient Name', 'Recipient Email', 'Skill Offered', 'Skill Wanted', 'Status', 'Created At', 'Completed At'];
+      const rows = swaps.map(s => [
+        s._id,
+        s.fromUserId?.name || 'Unknown',
+        s.fromUserId?.email || '',
+        s.toUserId?.name || 'Unknown',
+        s.toUserId?.email || '',
+        s.skillOffered || '',
+        s.skillWanted || '',
+        s.status || '',
+        s.createdAt ? new Date(s.createdAt).toISOString() : '',
+        s.completedAt ? new Date(s.completedAt).toISOString() : ''
+      ].map(escapeCSV).join(','));
+
+      const csvContent = [headers.map(escapeCSV).join(','), ...rows].join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=skillswap-swaps-${dateStr}.csv`);
+      return res.send(csvContent);
+    }
+
+    if (type === 'feedback') {
+      const swapsWithFeedback = await SwapRequest.find({
+        $or: [
+          { 'feedback.fromUserRating': { $exists: true } },
+          { 'feedback.toUserRating': { $exists: true } },
+          { status: 'completed' }
+        ]
+      })
+        .populate('fromUserId', 'name email')
+        .populate('toUserId', 'name email')
+        .sort({ completedAt: -1, createdAt: -1 })
+        .lean();
+
+      const headers = ['Swap ID', 'Requester Name', 'Requester Email', 'Recipient Name', 'Recipient Email', 'Skill Offered', 'Skill Wanted', 'Requester Rating', 'Requester Feedback', 'Recipient Rating', 'Recipient Feedback', 'Completed At'];
+      const rows = swapsWithFeedback.map(s => [
+        s._id,
+        s.fromUserId?.name || 'Unknown',
+        s.fromUserId?.email || '',
+        s.toUserId?.name || 'Unknown',
+        s.toUserId?.email || '',
+        s.skillOffered || '',
+        s.skillWanted || '',
+        s.feedback?.fromUserRating || '',
+        s.feedback?.fromUserComment || '',
+        s.feedback?.toUserRating || '',
+        s.feedback?.toUserComment || '',
+        s.completedAt ? new Date(s.completedAt).toISOString() : ''
+      ].map(escapeCSV).join(','));
+
+      const csvContent = [headers.map(escapeCSV).join(','), ...rows].join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=skillswap-feedback-${dateStr}.csv`);
+      return res.send(csvContent);
+    }
+
+    // Default: 'users' sign-ups and profiles
+    const users = await User.find().select('-password').sort({ createdAt: -1 }).lean();
+    const headers = ['User ID', 'Name', 'Email', 'Location', 'Availability', 'Skills Offered', 'Skills Wanted', 'Is Public', 'Is Admin', 'Is Banned', 'Rating', 'Review Count', 'Created At'];
+    const rows = users.map(u => [
+      u._id,
+      u.name,
+      u.email,
+      u.location || '',
+      u.availability || '',
+      u.skillsOffered || [],
+      u.skillsWanted || [],
+      u.isPublic ? 'Yes' : 'No',
+      u.isAdmin ? 'Yes' : 'No',
+      u.isBanned ? 'Yes' : 'No',
+      u.rating || 0,
+      u.reviewCount || 0,
+      u.createdAt ? new Date(u.createdAt).toISOString() : ''
+    ].map(escapeCSV).join(','));
+
+    const csvContent = [headers.map(escapeCSV).join(','), ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=skillswap-users-${dateStr}.csv`);
+    return res.send(csvContent);
+  } catch (error) {
+    console.error('Export CSV error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error generating CSV report'
     });
   }
 });
